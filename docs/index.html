@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>طلبات خمسات - تصميم</title>
+<style>
+  body{font-family:Tahoma,Arial,sans-serif;background:#f5f5f7;padding:20px;margin:0;}
+  .wrap{max-width:800px;margin:0 auto;}
+  h2{color:#222;margin-bottom:4px;}
+  .sub{color:#777;font-size:13px;margin-bottom:16px;}
+  .card{background:#fff;border-radius:10px;padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,0.08);}
+  .card a.title{color:#1a73e8;text-decoration:none;font-weight:700;font-size:16px;}
+  .card a.title:hover{text-decoration:underline;}
+  .age{color:#999;font-size:12px;margin:4px 0 8px;}
+  .desc{color:#444;font-size:14px;line-height:1.6;white-space:pre-line;}
+  .empty{text-align:center;color:#999;padding:30px;}
+  .refresh{font-size:12px;color:#aaa;margin-top:16px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2>أحدث طلبات التصميم على خمسات</h2>
+  <div class="sub" id="sub">جاري التحميل...</div>
+  <div id="list"></div>
+  <div class="refresh">آخر 24 ساعة فقط — يتحدّث تلقائياً كل 30 دقيقة تقريباً</div>
+</div>
+<script>
+fetch('jobs.json?t=' + Date.now())
+  .then(function (r) { return r.json(); })
+  .then(function (data) {
+    document.getElementById('sub').textContent =
+      data.matched + ' طلب مطابق من أصل ' + data.totalFound +
+      ' — آخر تحديث: ' + new Date(data.updatedAt).toLocaleString('ar-EG');
+    var list = document.getElementById('list');
+    if (data.jobs.length === 0) {
+      list.innerHTML = '<div class="empty">لا توجد طلبات مطابقة حالياً</div>';
+      return;
+    }
+    list.innerHTML = data.jobs.map(function (job) {
+      var desc = job.description ? '<div class="desc">' + escapeHtml(job.description) + '</div>' : '';
+      return (
+        '<div class="card">' +
+          '<a class="title" href="' + job.url + '" target="_blank">' + escapeHtml(job.title) + '</a>' +
+          '<div class="age">🕒 ' + escapeHtml(job.age) + '</div>' +
+          desc +
+        '</div>'
+      );
+    }).join('');
+  })
+  .catch(function (err) {
+    document.getElementById('sub').textContent = 'تعذر تحميل البيانات: ' + err;
+  });
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+</script>
+</body>
+</html>

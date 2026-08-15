@@ -1,1 +1,35 @@
+name: Notify Telegram - Khamsat Design Jobs
 
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # كل 30 دقيقة
+  workflow_dispatch: {}    # يسمح بالتشغيل اليدوي من تبويب Actions
+
+permissions:
+  contents: write
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node telegram-notify.js
+
+      - name: Commit notified list
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/notified-ids.json
+          git diff --staged --quiet || git commit -m "تحديث قائمة الطلبات المُرسلة"
+          git push

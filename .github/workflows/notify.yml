@@ -2,8 +2,9 @@ name: Notify Telegram - Khamsat Design Jobs
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # كل 30 دقيقة
-  workflow_dispatch: {}    # يسمح بالتشغيل اليدوي من تبويب Actions
+    - cron: '*/30 8-19 * * *'   # كل 30 دقيقة من 9:00 إلى 19:30 (توقيت الجزائر)
+    - cron: '0 20 * * *'        # آخر تشغيل الساعة 21:00 (توقيت الجزائر)
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -11,6 +12,7 @@ permissions:
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4

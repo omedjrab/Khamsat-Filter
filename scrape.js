@@ -1,8 +1,8 @@
 // ============================================================
 // سحب وفلترة طلبات التصميم من خمسات
 // - يستخدم متصفح حقيقي (headless Chrome) لتجاوز حماية AWS WAF
+// - يضغط "عرض المواضيع الأقدم" مرة عشان يوصل لحوالي 50 طلب بدل 25
 // - يقرأ الوقت الدقيق من خاصية title المخفية بكل عنصر (GMT كامل)
-//   بدل تخمين النص العربي التقريبي — أدق بكثير
 // - يفلتر: كلمات مفتاحية للتصميم + عمر الطلب أقل من 24 ساعة
 // - يرتب من الأحدث للأقدم حسب وقت الإنشاء الفعلي
 // - يجيب وصف كل طلب مطابق من صفحته التفصيلية (article.replace_urls)
@@ -26,7 +26,6 @@ const MAX_AGE_MINUTES = 24 * 60;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// يحوّل "14/08/2026 20:57:51 GMT" إلى epoch milliseconds (UTC)
 function parseGmtTitle(str) {
   if (!str) return null;
   const m = str.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
@@ -69,7 +68,23 @@ function formatAge(minutes) {
     console.log('تحذير: ما لقيت صفوف طلبات بعد الانتظار.');
   }
 
-  // نستخرج العنوان والرابط والوقت الدقيق (GMT) مباشرة من كل صف
+  // نضغط "عرض المواضيع الأقدم" مرة وحدة عشان نوصل لحوالي 50 طلب بدل 25
+  try {
+    const loadMoreBtn = await page.$('#community_loadmore_btn');
+    if (loadMoreBtn) {
+      const countBefore = await page.$$eval('tr.forum_post', (rows) => rows.length);
+      await loadMoreBtn.click();
+      await page.waitForFunction(
+        (prevCount) => document.querySelectorAll('tr.forum_post').length > prevCount,
+        { timeout: 15000 },
+        countBefore
+      );
+      console.log('تم تحميل صفحة إضافية من الطلبات.');
+    }
+  } catch (e) {
+    console.log('تحذير: ما قدرت أحمّل "المواضيع الأقدم" (يمكن الزر مو موجود أو تأخر التحميل).');
+  }
+
   const rawJobs = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('tr.forum_post'));
     const results = [];
@@ -85,7 +100,6 @@ function formatAge(minutes) {
       const title = (link.textContent || '').trim();
       if (!title) return;
 
-      // وقت الإنشاء الأصلي (مو آخر تفاعل) — العنصر المرئي بالديسكتوب
       const timeSpan = row.querySelector('li.d-lg-inline-block.d-none span[title]');
       const dateTitle = timeSpan ? timeSpan.getAttribute('title') : '';
 
@@ -104,8 +118,8 @@ function formatAge(minutes) {
 
   const jobs = rawJobs.map((job) => {
     const epoch = parseGmtTitle(job.dateTitle);
-    const minutesAgo = epoch === null ? null : Math.round((Date.now() - epoch) / 60000);
-    return { ...job, minutesAgo: Math.max(0, minutesAgo) };
+    const minutesAgo = epoch === null ? null : Math.max(0, Math.round((Date.now() - epoch) / 60000));
+    return { ...job, minutesAgo };
   });
 
   let filtered = jobs.filter((job) => KEYWORDS.some((kw) => job.title.includes(kw)));
@@ -119,7 +133,6 @@ function formatAge(minutes) {
     return aMin - bMin;
   });
 
-  // نجيب وصف كل طلب مطابق من صفحته التفصيلية
   for (const job of filtered) {
     try {
       await page.goto(job.url, { waitUntil: 'networkidle2', timeout: 30000 });

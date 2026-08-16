@@ -1,6 +1,8 @@
 // ============================================================
 // سحب وفلترة طلبات التصميم من خمسات
 // - يستخدم متصفح حقيقي (headless Chrome) لتجاوز حماية AWS WAF
+// - يقرأ الروابط والعناوين مباشرة من عناصر الصفحة (DOM) بدل تحليل
+//   نص HTML يدوياً، عشان يشتغل سواء كانت الروابط كاملة أو نسبية
 // - يفلتر: كلمات مفتاحية للتصميم + عمر الطلب أقل من 24 ساعة
 // - يرتب من الأحدث للأقدم حسب وقت الإنشاء الفعلي
 // - يجيب وصف كل طلب مطابق من صفحته التفصيلية
@@ -13,7 +15,6 @@ puppeteer.use(StealthPlugin());
 const fs = require('fs');
 const path = require('path');
 
-// عدّل هذي القائمة حسب مجالاتك بالضبط
 const KEYWORDS = [
   'تصميم', 'شعار', 'لوجو', 'بانر', 'غلاف', 'سوشيال ميديا',
   'انفوجرافيك', 'بروشور', 'فلاير', 'إعلان', 'ثمبنيل',
@@ -21,7 +22,7 @@ const KEYWORDS = [
 ];
 
 const SOURCE_URL = 'https://khamsat.com/community/requests';
-const MAX_AGE_MINUTES = 24 * 60; // آخر 24 ساعة فقط
+const MAX_AGE_MINUTES = 24 * 60;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -42,21 +43,26 @@ function parseArabicRelativeTime(text) {
   return total;
 }
 
-function formatAge(minutes) {
-  if (minutes === null || minutes === undefined) return 'غير معروف';
+function extractAgeText(contextText) {
+  if (!contextText) return '';
+  const lines = contextText.split('\n').map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (line.includes('منذ') && !line.includes('آخر تفاعل')) {
+      return line.replace('منذ', '').trim();
+    }
+  }
+  for (const line of lines) {
+    if (line.includes('أقل من دقيقة')) return 'أقل من دقيقة';
+  }
+  return '';
+}
+
+function formatAge(minutes, fallbackText) {
+  if (minutes === null || minutes === undefined) return fallbackText || 'غير معروف';
   if (minutes < 1) return 'أقل من دقيقة';
   if (minutes < 60) return 'منذ ' + minutes + ' دقيقة';
   if (minutes < 1440) return 'منذ ' + Math.floor(minutes / 60) + ' ساعة';
   return 'منذ ' + Math.floor(minutes / 1440) + ' يوم';
-}
-
-function decodeHtmlEntities(str) {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
 }
 
 (async () => {
@@ -78,53 +84,62 @@ function decodeHtmlEntities(str) {
     console.log('تحذير: ما لقيت روابط طلبات بعد الانتظار.');
   }
 
-  const html = await page.content();
+  const rawJobs = await page.evaluate(() => {
+    const anchors = Array.from(document.querySelectorAll('a[href*="/community/requests/"]'));
+    const seen = {};
+    const results = [];
 
-  const jobs = [];
-  const seen = {};
-  const linkRegex = /<a href="https:\/\/khamsat\.com\/community\/requests\/(\d+)-[^"]*"[^>]*>([^<]+)<\/a>/g;
-  let match;
+    anchors.forEach((a) => {
+      const href = a.getAttribute('href') || '';
+      const match = href.match(/\/community\/requests\/(\d+)-/);
+      if (!match) return;
+      const id = parseInt(match[1], 10);
+      if (seen[id]) return;
 
-  while ((match = linkRegex.exec(html)) !== null) {
-    const id = parseInt(match[1], 10);
-    if (seen[id]) continue;
-    seen[id] = true;
+      const title = (a.textContent || '').trim();
+      if (!title) return;
+      seen[id] = true;
 
-    const title = decodeHtmlEntities(match[2].trim());
+      let container = a.parentElement;
+      let contextText = '';
+      for (let i = 0; i < 3 && container; i++) {
+        contextText = container.innerText || '';
+        if (contextText.includes('منذ')) break;
+        container = container.parentElement;
+      }
 
-    // نبحث عن أول "منذ ..." (وقت الإنشاء الأصلي) قبل "آخر تفاعل"
-    const chunk = html.substr(match.index, 800);
-    let ageText = '';
-    const timeMatch = chunk.match(/منذ\s+([^<]+?)\s*(?:<br|آخر تفاعل)/);
-    if (timeMatch) {
-      ageText = timeMatch[1].trim();
-    } else if (/أقل من دقيقة/.test(chunk.substring(0, 300))) {
-      ageText = 'أقل من دقيقة';
-    }
-
-    const minutesAgo = parseArabicRelativeTime(ageText);
-
-    jobs.push({
-      id: id,
-      title: title,
-      url: 'https://khamsat.com/community/requests/' + id,
-      minutesAgo: minutesAgo,
-      ageText: ageText
+      results.push({
+        id: id,
+        title: title,
+        url: a.href,
+        contextText: contextText.slice(0, 400)
+      });
     });
-  }
 
-  // فلترة: كلمات مفتاحية + عمر أقل من 24 ساعة (نستبعد فقط لو عرفنا عمره وكان أكبر من الحد)
+    return results;
+  });
+
+  const jobs = rawJobs.map((job) => {
+    const ageText = extractAgeText(job.contextText);
+    const minutesAgo = parseArabicRelativeTime(ageText);
+    return {
+      id: job.id,
+      title: job.title,
+      url: job.url,
+      ageText: ageText,
+      minutesAgo: minutesAgo
+    };
+  });
+
   let filtered = jobs.filter((job) => KEYWORDS.some((kw) => job.title.includes(kw)));
   filtered = filtered.filter((job) => job.minutesAgo === null || job.minutesAgo <= MAX_AGE_MINUTES);
 
-  // ترتيب من الأحدث للأقدم حسب وقت الإنشاء الفعلي
   filtered.sort((a, b) => {
     const aMin = a.minutesAgo === null ? 999999 : a.minutesAgo;
     const bMin = b.minutesAgo === null ? 999999 : b.minutesAgo;
     return aMin - bMin;
   });
 
-  // جلب وصف كل طلب مطابق من صفحته التفصيلية (best effort)
   for (const job of filtered) {
     try {
       await page.goto(job.url, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -157,7 +172,7 @@ function decodeHtmlEntities(str) {
       id: job.id,
       title: job.title,
       url: job.url,
-      age: job.ageText ? formatAge(job.minutesAgo) : 'غير معروف',
+      age: formatAge(job.minutesAgo, job.ageText),
       description: job.description || ''
     }))
   };

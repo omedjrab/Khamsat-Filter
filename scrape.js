@@ -1,11 +1,9 @@
 // ============================================================
 // سحب وفلترة طلبات التصميم من خمسات
 // - يستخدم متصفح حقيقي (headless Chrome) لتجاوز حماية AWS WAF
-// - يقرأ الروابط والعناوين مباشرة من عناصر الصفحة (DOM) بدل تحليل
-//   نص HTML يدوياً، عشان يشتغل سواء كانت الروابط كاملة أو نسبية
-// - يفلتر: كلمات مفتاحية للتصميم + عمر الطلب أقل من 24 ساعة
-// - يرتب من الأحدث للأقدم حسب وقت الإنشاء الفعلي
-// - يجيب وصف كل طلب مطابق من صفحته التفصيلية
+// - يفلتر بالكلمات المفتاحية من صفحة القائمة
+// - يزور صفحة كل طلب مطابق ليجيب الوقت والوصف بدقة أعلى
+// - بعدين يفلتر الطلبات الأقدم من 24 ساعة ويرتب من الأحدث للأقدم
 // ============================================================
 
 const puppeteer = require('puppeteer-extra');
@@ -40,21 +38,15 @@ function parseArabicRelativeTime(text) {
   const min = text.match(/(\d+)?\s*(دقيقة|دقيقتين|دقائق)/);
   if (min) total += (min[1] ? parseInt(min[1], 10) : (min[2] === 'دقيقتين' ? 2 : 1));
 
+  if (total === 0 && !day && !hour && !min) return null;
   return total;
 }
 
-function extractAgeText(contextText) {
-  if (!contextText) return '';
-  const lines = contextText.split('\n').map((l) => l.trim()).filter(Boolean);
-  for (const line of lines) {
-    if (line.includes('منذ') && !line.includes('آخر تفاعل')) {
-      return line.replace('منذ', '').trim();
-    }
-  }
-  for (const line of lines) {
-    if (line.includes('أقل من دقيقة')) return 'أقل من دقيقة';
-  }
-  return '';
+function extractAgeFromRaw(raw) {
+  if (!raw) return '';
+  const idx = raw.indexOf('منذ');
+  if (idx === -1) return '';
+  return raw.slice(idx + 3, idx + 3 + 40).trim();
 }
 
 function formatAge(minutes, fallbackText) {
@@ -84,102 +76,4 @@ function formatAge(minutes, fallbackText) {
     console.log('تحذير: ما لقيت روابط طلبات بعد الانتظار.');
   }
 
-  const rawJobs = await page.evaluate(() => {
-    const anchors = Array.from(document.querySelectorAll('a[href*="/community/requests/"]'));
-    const seen = {};
-    const results = [];
-
-    anchors.forEach((a) => {
-      const href = a.getAttribute('href') || '';
-      const match = href.match(/\/community\/requests\/(\d+)-/);
-      if (!match) return;
-      const id = parseInt(match[1], 10);
-      if (seen[id]) return;
-
-      const title = (a.textContent || '').trim();
-      if (!title) return;
-      seen[id] = true;
-
-      let container = a.parentElement;
-      let contextText = '';
-      for (let i = 0; i < 3 && container; i++) {
-        contextText = container.innerText || '';
-        if (contextText.includes('منذ')) break;
-        container = container.parentElement;
-      }
-
-      results.push({
-        id: id,
-        title: title,
-        url: a.href,
-        contextText: contextText.slice(0, 400)
-      });
-    });
-
-    return results;
-  });
-
-  const jobs = rawJobs.map((job) => {
-    const ageText = extractAgeText(job.contextText);
-    const minutesAgo = parseArabicRelativeTime(ageText);
-    return {
-      id: job.id,
-      title: job.title,
-      url: job.url,
-      ageText: ageText,
-      minutesAgo: minutesAgo
-    };
-  });
-
-  let filtered = jobs.filter((job) => KEYWORDS.some((kw) => job.title.includes(kw)));
-  filtered = filtered.filter((job) => job.minutesAgo === null || job.minutesAgo <= MAX_AGE_MINUTES);
-
-  filtered.sort((a, b) => {
-    const aMin = a.minutesAgo === null ? 999999 : a.minutesAgo;
-    const bMin = b.minutesAgo === null ? 999999 : b.minutesAgo;
-    return aMin - bMin;
-  });
-
-  for (const job of filtered) {
-    try {
-      await page.goto(job.url, { waitUntil: 'networkidle2', timeout: 30000 });
-      const desc = await page.evaluate(() => {
-        const h1 = document.querySelector('h1');
-        if (!h1) return '';
-        let el = h1.nextElementSibling;
-        let hops = 0;
-        while (el && hops < 15) {
-          const text = (el.innerText || '').trim();
-          if (text.length > 25) return text.slice(0, 500);
-          el = el.nextElementSibling;
-          hops++;
-        }
-        return '';
-      });
-      job.description = desc;
-    } catch (e) {
-      job.description = '';
-    }
-  }
-
-  await browser.close();
-
-  const output = {
-    updatedAt: new Date().toISOString(),
-    totalFound: jobs.length,
-    matched: filtered.length,
-    jobs: filtered.map((job) => ({
-      id: job.id,
-      title: job.title,
-      url: job.url,
-      age: formatAge(job.minutesAgo, job.ageText),
-      description: job.description || ''
-    }))
-  };
-
-  const outDir = path.join(__dirname, 'docs');
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, 'jobs.json'), JSON.stringify(output, null, 2), 'utf-8');
-
-  console.log(`تم. إجمالي: ${jobs.length}, مطابق (تصميم + أقل من 24 ساعة): ${filtered.length}`);
-})();
+  const rawJobs =

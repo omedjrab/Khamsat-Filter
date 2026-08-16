@@ -1,7 +1,7 @@
 // ============================================================
 // إرسال الطلبات الجديدة إلى تيليجرام
-// يقارن jobs.json الحالي مع قائمة الأرقام (IDs) اللي أُرسلت قبل،
-// ويبعت بس الجديد فعلاً: العنوان، وقت الإنشاء، والوصف
+// يقارن jobs.json الحالي مع قائمة الأرقام (IDs) اللي أُرسلت قبل
+// بنجاح فعلي، ويبعت بس الجديد: العنوان، وقت الإنشاء، والوصف
 // ============================================================
 
 const fs = require('fs');
@@ -45,6 +45,10 @@ const MAX_KEEP = 1000;
     return;
   }
 
+  console.log(`محاولة إرسال ${newJobs.length} طلب جديد...`);
+
+  const successfullyNotified = [];
+
   for (const job of newJobs) {
     const descLine = job.description
       ? '\n' + escapeHtml(truncate(job.description, 300))
@@ -56,27 +60,36 @@ const MAX_KEEP = 1000;
       `\n\n🔗 <a href="${job.url}">فتح الطلب</a>`;
 
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: message,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true
-      })
-    });
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: CHAT_ID,
+          text: message,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true
+        })
+      });
 
-    const result = await res.json();
-    if (!result.ok) {
-      console.log('فشل إرسال رسالة للطلب ' + job.id + ':', JSON.stringify(result));
+      const result = await res.json();
+      if (!result.ok) {
+        console.log(`فشل إرسال الطلب ${job.id}: ${JSON.stringify(result)}`);
+      } else {
+        console.log(`تم إرسال الطلب ${job.id} بنجاح.`);
+        successfullyNotified.push(job.id);
+      }
+    } catch (err) {
+      console.log(`خطأ شبكة أثناء إرسال الطلب ${job.id}: ${err.message}`);
     }
   }
 
-  console.log(`تم إرسال ${newJobs.length} طلب جديد إلى تيليجرام.`);
+  console.log(`النتيجة النهائية: ${successfullyNotified.length} من أصل ${newJobs.length} أُرسلوا بنجاح.`);
 
-  const updatedIds = [...notifiedIds, ...newJobs.map((j) => j.id)].slice(-MAX_KEEP);
-  fs.writeFileSync(NOTIFIED_PATH, JSON.stringify({ ids: updatedIds }, null, 2), 'utf-8');
+  if (successfullyNotified.length > 0) {
+    const updatedIds = [...notifiedIds, ...successfullyNotified].slice(-MAX_KEEP);
+    fs.writeFileSync(NOTIFIED_PATH, JSON.stringify({ ids: updatedIds }, null, 2), 'utf-8');
+  }
 })();
 
 function escapeHtml(str) {

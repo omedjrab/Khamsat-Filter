@@ -76,4 +76,116 @@ function formatAge(minutes, fallbackText) {
     console.log('تحذير: ما لقيت روابط طلبات بعد الانتظار.');
   }
 
-  const rawJobs =
+  const rawJobs = await page.evaluate(() => {
+    const anchors = Array.from(document.querySelectorAll('a[href*="/community/requests/"]'));
+    const seen = {};
+    const results = [];
+
+    anchors.forEach((a) => {
+      const href = a.getAttribute('href') || '';
+      const match = href.match(/\/community\/requests\/(\d+)-/);
+      if (!match) return;
+      const id = parseInt(match[1], 10);
+      if (seen[id]) return;
+
+      const title = (a.textContent || '').trim();
+      if (!title) return;
+      seen[id] = true;
+
+      results.push({ id, title, url: a.href });
+    });
+
+    return results;
+  });
+
+  console.log(`إجمالي الطلبات في الصفحة: ${rawJobs.length}`);
+
+  // فلترة أولية بالكلمات المفتاحية فقط (الوقت الدقيق نجيبه من صفحة كل طلب)
+  const keywordMatched = rawJobs.filter((job) => KEYWORDS.some((kw) => job.title.includes(kw)));
+  console.log(`مطابق للكلمات المفتاحية: ${keywordMatched.length}`);
+
+  const enriched = [];
+
+  for (const job of keywordMatched) {
+    try {
+      await page.goto(job.url, { waitUntil: 'networkidle2', timeout: 30000 });
+      const { ageRaw, description } = await page.evaluate(() => {
+        const h1 = document.querySelector('h1');
+        if (!h1) return { ageRaw: '', description: '' };
+
+        let el = h1.nextElementSibling;
+        let hops = 0;
+        let ageRaw = '';
+        let description = '';
+
+        while (el && hops < 20) {
+          const text = (el.innerText || '').trim();
+          if (text) {
+            if (!ageRaw && text.includes('منذ')) {
+              ageRaw = text;
+            } else if (!description && text.length > 25 && !text.includes('منذ')) {
+              description = text;
+            }
+          }
+          if (ageRaw && description) break;
+          el = el.nextElementSibling;
+          hops++;
+        }
+
+        return { ageRaw, description };
+      });
+
+      const ageText = extractAgeFromRaw(ageRaw);
+      const minutesAgo = parseArabicRelativeTime(ageText);
+
+      enriched.push({
+        id: job.id,
+        title: job.title,
+        url: job.url,
+        ageText: ageText,
+        minutesAgo: minutesAgo,
+        description: description || ''
+      });
+    } catch (e) {
+      enriched.push({
+        id: job.id,
+        title: job.title,
+        url: job.url,
+        ageText: '',
+        minutesAgo: null,
+        description: ''
+      });
+    }
+  }
+
+  // فلترة الطلبات الأقدم من 24 ساعة (نستبعد فقط لو عرفنا عمره فعلاً وكان أكبر من الحد)
+  let filtered = enriched.filter((job) => job.minutesAgo === null || job.minutesAgo <= MAX_AGE_MINUTES);
+
+  // ترتيب من الأحدث للأقدم
+  filtered.sort((a, b) => {
+    const aMin = a.minutesAgo === null ? 999999 : a.minutesAgo;
+    const bMin = b.minutesAgo === null ? 999999 : b.minutesAgo;
+    return aMin - bMin;
+  });
+
+  await browser.close();
+
+  const output = {
+    updatedAt: new Date().toISOString(),
+    totalFound: rawJobs.length,
+    matched: filtered.length,
+    jobs: filtered.map((job) => ({
+      id: job.id,
+      title: job.title,
+      url: job.url,
+      age: formatAge(job.minutesAgo, job.ageText),
+      description: job.description || ''
+    }))
+  };
+
+  const outDir = path.join(__dirname, 'docs');
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, 'jobs.json'), JSON.stringify(output, null, 2), 'utf-8');
+
+  console.log(`تم. إجمالي: ${rawJobs.length}, مطابق (تصميم + أقل من 24 ساعة): ${filtered.length}`);
+})();
